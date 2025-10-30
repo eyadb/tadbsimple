@@ -72,7 +72,8 @@ class DataFetcher:
             (df['avgVolume'] > 0) &
             (~df['symbol'].str.contains("-", na=False)) &
             (df['price'] > 0) &
-            (~df['symbol'].isin(self.etf_symbols))
+            (~df['symbol'].isin(self.etf_symbols)) &
+            (df['symbol'].str.len() <= 4)
         ].copy()
         
         logger.info(f"{exchange}: {len(df)} symbols after filtering (ETFs excluded)")

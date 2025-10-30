@@ -1,6 +1,6 @@
 """
 Stock Indicators System - Main Orchestrator
-Minimal, focused workflow: Fetch → (optional cleanup) → Calculate → Store
+Minimal, focused workflow: Fetch → (optional cleanup) → Calculate → Store → Find Hot Stocks
 """
 
 import logging
@@ -10,6 +10,7 @@ import config
 from db_manager import DatabaseManager
 from data_fetcher import DataFetcher
 from indicator_engine import IndicatorCalculator
+from find_hot_stocks import HotStockFinder
 
 # Configure logging
 logging.basicConfig(
@@ -31,12 +32,14 @@ class StockIndicatorSystem:
         # Components
         self.fetcher = DataFetcher(config.FMP_API_KEY, config.FMP_BASE_URL, self.db)
         self.calculator = IndicatorCalculator(self.db)
+        self.hot_stocks_finder = HotStockFinder(config.REMOTE_DB)
     
     def run(self,
             fetch_data: bool = True,
             calculate_indicators: bool = True,
             cleanup_mode: str = "none",
-            cleanup_date: str | None = None):
+            cleanup_date: str | None = None,
+            find_hot_stocks: bool = True):
         """Main execution pipeline"""
         start_time = datetime.now()
         logger.info(f"Starting run at {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
@@ -82,6 +85,35 @@ class StockIndicatorSystem:
                 total_calculated = self.calculator.process_all_symbols(config.BATCH_SIZE)
                 logger.info(f"Calculated indicators for {total_calculated} symbols\n")
             
+            # Step 3: Find hot stocks
+            if find_hot_stocks:
+                logger.info("=" * 60)
+                logger.info("STEP 3: Finding Hot Stocks")
+                logger.info("=" * 60)
+                
+                # Create table if needed
+                if not self.hot_stocks_finder.create_hot_stocks_table():
+                    logger.error("Failed to create hot_stocks table")
+                else:
+                    # Delete old records
+                    self.hot_stocks_finder.delete_old_records(days_to_keep=7)
+                    
+                    # Find and process hot stocks
+                    hot_stocks = self.hot_stocks_finder.find_hot_stocks(
+                        min_price_change_pct=5.0, 
+                        min_volume_ratio=2.0
+                    )
+                    
+                    # Display results
+                    self.hot_stocks_finder.display_hot_stocks(hot_stocks)
+                    
+                    # Insert into database
+                    if hot_stocks:
+                        count = self.hot_stocks_finder.insert_hot_stocks(hot_stocks)
+                        logger.info(f"Processed {count} hot stocks\n")
+                    else:
+                        logger.info("No hot stocks found\n")
+            
         except Exception as e:
             logger.error(f"Error in main pipeline: {e}")
             raise
@@ -97,6 +129,7 @@ class StockIndicatorSystem:
     
     def cleanup(self):
         """Clean up resources"""
+        self.hot_stocks_finder.close()
         self.db.close()
         logger.info("System shutdown complete")
 
@@ -109,6 +142,9 @@ if __name__ == "__main__":
     parser.add_argument("--calc", action="store_true", help="Calculate and store indicators")
     parser.add_argument("--no-calc", dest="calc", action="store_false", help="Skip indicator calculation")
     parser.set_defaults(calc=True)
+    parser.add_argument("--hot-stocks", action="store_true", help="Find and store hot stocks")
+    parser.add_argument("--no-hot-stocks", dest="hot_stocks", action="store_false", help="Skip finding hot stocks")
+    parser.set_defaults(hot_stocks=True)
     parser.add_argument("--cleanup-mode", choices=["none", "truncate", "keep-latest", "keep-date"], default="truncate",
                         help="Cleanup behavior for stockindicators before calculation")
     parser.add_argument("--cleanup-date", help="YYYY-MM-DD (used with --cleanup-mode keep-date)")
@@ -118,6 +154,7 @@ if __name__ == "__main__":
     system.run(
         fetch_data=args.fetch,
         calculate_indicators=args.calc,
+        find_hot_stocks=args.hot_stocks,
         cleanup_mode=args.cleanup_mode,
         cleanup_date=args.cleanup_date
     )
